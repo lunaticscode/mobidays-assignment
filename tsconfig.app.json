@@ -21,8 +21,7 @@
     "erasableSyntaxOnly": true,
     "noFallthroughCasesInSwitch": true,
 
-    /* Path Alias */
-    "baseUrl": ".",
+    /* Path Alias (TS 5.0+: paths 는 baseUrl 없이 tsconfig 위치 기준으로 해석) */
     "paths": { "@/*": ["./src/*"] }
   },
   "include": ["src", "mocks"]
