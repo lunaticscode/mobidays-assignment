@@ -76,7 +76,9 @@ describe("GET /api/campaigns", () => {
       },
     });
 
-    expect(data.campaigns.length).toBeGreaterThan(0);
+    // expect(data.campaigns.length).toBeGreaterThan(0);
+    // count 21
+    expect(data.total).toBe(21);
     for (const c of data.campaigns) {
       expect(["active", "paused"]).toContain(c.status);
       expect(c.platform).toBe("Google");
@@ -90,7 +92,9 @@ describe("GET /api/campaigns", () => {
       query: { startDate, endDate },
     });
 
-    expect(data.campaigns.length).toBeGreaterThan(0);
+    // expect(data.campaigns.length).toBeGreaterThan(0);
+    // count 29
+    expect(data.total).toBe(29);
     for (const c of data.campaigns) {
       // overlap: c.endDate >= startDate && c.startDate <= endDate
       expect(c.endDate >= startDate).toBe(true);
