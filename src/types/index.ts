@@ -21,7 +21,16 @@ export interface DailyStat {
   conversionsValue: number | null; // 전환 가치 (매출액)
 }
 
-export interface GlobalFilterState extends Pick<
-  Campaign,
-  "startDate" | "endDate" | "status" | "platform"
-> {}
+// Campaign 에서 파생된 enum 성격의 union 타입을 재사용 가능하도록 공개한다.
+export type CampaignStatus = Campaign["status"];
+export type Platform = Campaign["platform"];
+
+// 3. GlobalFilterState: 전역 필터 상태
+// - 집행 기간은 선택값(비워두면 전체 기간)
+// - 상태 / 매체는 토글 버튼 그룹 기반 다중 선택(AND 조합)
+export interface GlobalFilterState {
+  startDate?: string;
+  endDate?: string;
+  statuses: CampaignStatus[];
+  platforms: Platform[];
+}

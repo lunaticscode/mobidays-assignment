@@ -1,14 +1,15 @@
 import { http, HttpResponse } from "msw";
 
+import type { CampaignStatus, GlobalFilterState, Platform } from "@/types";
+
 import rawData from "./data.json";
 
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
 
-type CampaignStatus = "active" | "paused" | "ended";
-type Platform = "Google" | "Meta" | "Naver";
-
+// 핸들러가 다루는 정규화된(normalized) Campaign.
+// 원천 `Campaign` 타입은 endDate 가 nullable 이지만, 정규화 후에는 항상 string.
 interface Campaign {
   id: string;
   name: string;
@@ -63,6 +64,17 @@ function normalizeDate(value: unknown): string {
   return value.replace(/\//g, "-");
 }
 
+function normalizeBudget(value: unknown): number {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string") {
+    // "2000000원", "2,000,000" 같은 표기 → 숫자만 추출
+    const digits = value.replace(/[^0-9.-]/g, "");
+    const parsed = Number(digits);
+    return Number.isFinite(parsed) ? parsed : 0;
+  }
+  return 0;
+}
+
 function normalizeStatus(value: unknown): CampaignStatus | null {
   if (typeof value !== "string") return null;
   if ((VALID_STATUSES as readonly string[]).includes(value)) {
@@ -84,7 +96,7 @@ interface RawCampaign {
   name: string | null;
   status: string;
   platform: string;
-  budget: number | null;
+  budget: number | string | null;
   startDate: string;
   endDate: string;
 }
@@ -98,7 +110,7 @@ function sanitizeCampaign(raw: RawCampaign): Campaign | null {
     name: raw.name ?? FALLBACK_NAME,
     status,
     platform,
-    budget: raw.budget ?? 0,
+    budget: normalizeBudget(raw.budget),
     startDate: normalizeDate(raw.startDate),
     endDate: normalizeDate(raw.endDate),
   };
@@ -120,44 +132,65 @@ const dailyStats: DailyStat[] = (rawData.daily_stats as DailyStat[]).map(
 // Filter helpers
 // ---------------------------------------------------------------------------
 
-interface CampaignFilter {
-  startDate?: string;
-  endDate?: string;
-  statuses: string[];
-  platforms: string[];
-}
-
-function readCampaignFilter(url: URL): CampaignFilter {
+function readCampaignFilter(url: URL): GlobalFilterState {
   return {
     startDate: url.searchParams.get("startDate") ?? undefined,
     endDate: url.searchParams.get("endDate") ?? undefined,
-    statuses: url.searchParams.getAll("status"),
-    platforms: url.searchParams.getAll("platform"),
+    statuses: url.searchParams.getAll("status") as CampaignStatus[],
+    platforms: url.searchParams.getAll("platform") as Platform[],
   };
+}
+
+/**
+ * 캠페인의 집행기간이 필터 기간과 겹치는지(overlap) 판정한다.
+ * filter.startDate / filter.endDate 가 없으면 해당 방향 제약은 생략된다.
+ */
+function isOverlapCampaign(
+  campaign: Campaign,
+  filter: Pick<GlobalFilterState, "startDate" | "endDate">,
+): boolean {
+  if (filter.startDate && campaign.endDate < filter.startDate) return false;
+  if (filter.endDate && campaign.startDate > filter.endDate) return false;
+  return true;
+}
+
+/**
+ * 캠페인의 status 가 필터 조건에 부합하는지 판정한다.
+ * 필터가 비어있으면(선택 없음) 모든 캠페인을 통과시킨다.
+ */
+function isStatusMatched(
+  campaign: Campaign,
+  filter: Pick<GlobalFilterState, "statuses">,
+): boolean {
+  if (filter.statuses.length === 0) return true;
+  return filter.statuses.includes(campaign.status);
+}
+
+/**
+ * 캠페인의 platform 이 필터 조건에 부합하는지 판정한다.
+ * 필터가 비어있으면(선택 없음) 모든 캠페인을 통과시킨다.
+ */
+function isPlatformMatched(
+  campaign: Campaign,
+  filter: Pick<GlobalFilterState, "platforms">,
+): boolean {
+  if (filter.platforms.length === 0) return true;
+  return filter.platforms.includes(campaign.platform);
+}
+
+function campaignFiltering(campaign: Campaign, filter: GlobalFilterState) {
+  return (
+    isOverlapCampaign(campaign, filter) &&
+    isStatusMatched(campaign, filter) &&
+    isPlatformMatched(campaign, filter)
+  );
 }
 
 function applyCampaignFilter(
   source: Campaign[],
-  filter: CampaignFilter,
+  filter: GlobalFilterState,
 ): Campaign[] {
-  return source.filter((campaign) => {
-    // 집행 기간이 필터 기간과 겹치면 통과 (overlap)
-    if (filter.startDate && campaign.endDate < filter.startDate) return false;
-    if (filter.endDate && campaign.startDate > filter.endDate) return false;
-    if (
-      filter.statuses.length > 0 &&
-      !filter.statuses.includes(campaign.status)
-    ) {
-      return false;
-    }
-    if (
-      filter.platforms.length > 0 &&
-      !filter.platforms.includes(campaign.platform)
-    ) {
-      return false;
-    }
-    return true;
-  });
+  return source.filter((campaign) => campaignFiltering(campaign, filter));
 }
 
 // ---------------------------------------------------------------------------
@@ -166,7 +199,7 @@ function applyCampaignFilter(
 
 export const handlers = [
   // GET /api/campaigns ----------------------------------------------------
-  http.get("/api/campaigns", ({ request }) => {
+  http.get("*/api/campaigns", ({ request }) => {
     const url = new URL(request.url);
     const filter = readCampaignFilter(url);
     const result = applyCampaignFilter(campaigns, filter);
@@ -177,7 +210,7 @@ export const handlers = [
   }),
 
   // POST /api/campaigns ---------------------------------------------------
-  http.post("/api/campaigns", async ({ request }) => {
+  http.post("*/api/campaigns", async ({ request }) => {
     const body = (await request.json()) as Partial<Campaign>;
 
     const platform = normalizePlatform(body.platform);
@@ -212,7 +245,7 @@ export const handlers = [
   }),
 
   // PATCH /api/campaigns/:id/status ---------------------------------------
-  http.patch("/api/campaigns/:id/status", async ({ params, request }) => {
+  http.patch("*/api/campaigns/:id/status", async ({ params, request }) => {
     const id = params.id as string;
     const body = (await request.json()) as { status?: string };
 
@@ -239,7 +272,7 @@ export const handlers = [
   // GET /api/daily-stats --------------------------------------------------
   // GlobalFilter 와 동일한 조건(status / platform / 기간) 으로 캠페인을 1차
   // 필터링한 뒤, 해당 캠페인들의 daily_stats 를 기간 내로 추려 반환한다.
-  http.get("/api/daily-stats", ({ request }) => {
+  http.get("*/api/daily-stats", ({ request }) => {
     const url = new URL(request.url);
     const filter = readCampaignFilter(url);
     const campaignIds = url.searchParams.getAll("campaignId");
